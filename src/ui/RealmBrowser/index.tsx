@@ -19,6 +19,7 @@
 import { ipcRenderer, MenuItemConstructorOptions, remote } from 'electron';
 import * as path from 'path';
 import * as React from 'react';
+import { RealmConsumer, RealmProvider } from 'react-realm-context';
 import * as Realm from 'realm';
 
 import * as dataImporter from '../../services/data-importer';
@@ -29,11 +30,8 @@ import {
   IMenuGeneratorProps,
 } from '../../windows/MenuGenerator';
 import { IRealmBrowserWindowProps } from '../../windows/WindowProps';
+import { ILoadingProgress } from '../reusable';
 import { showError } from '../reusable/errors';
-import {
-  IRealmLoadingComponentState,
-  RealmLoadingComponent,
-} from '../reusable/RealmLoadingComponent';
 
 import { Content, EditMode } from './Content';
 import { Focus, generateKey, IClassFocus, IListFocus } from './focus';
@@ -62,7 +60,7 @@ export type ClassFocussedHandler = (
 
 const EDIT_MODE_STORAGE_KEY = 'realm-browser-edit-mode';
 
-export interface IRealmBrowserState extends IRealmLoadingComponentState {
+export interface IRealmBrowserState {
   // A number that we can use to make components update on changes to data
   dataVersion: number;
   dataVersionAtBeginning?: number;
@@ -74,10 +72,11 @@ export interface IRealmBrowserState extends IRealmLoadingComponentState {
   isLeftSidebarOpen: boolean;
   // The classes are only supposed to be used to produce a list of classes in the sidebar
   classes: Realm.ObjectSchema[];
+  importProgress: ILoadingProgress;
 }
 
 class RealmBrowserContainer
-  extends RealmLoadingComponent<
+  extends React.Component<
     IRealmBrowserWindowProps & IMenuGeneratorProps,
     IRealmBrowserState
   >
@@ -92,22 +91,24 @@ class RealmBrowserContainer
     isAddPropertyOpen: false,
     isEncryptionDialogVisible: false,
     isLeftSidebarOpen: true,
-    progress: { status: 'idle' },
+    importProgress: { status: 'idle' },
     classes: [],
   };
 
   private contentInstance: Content | null = null;
+  private realm: Realm | null = null;
 
   public componentDidMount() {
+    /*
     this.loadRealm(
       this.props.realm,
       this.props.import ? this.props.import.schema : undefined,
     );
+    */
     this.addListeners();
   }
 
   public componentWillUnmount() {
-    super.componentWillUnmount();
     this.removeListeners();
     if (this.realm && this.realm.isInTransaction) {
       this.realm.cancelTransaction();
@@ -116,38 +117,54 @@ class RealmBrowserContainer
 
   public render() {
     const contentKey = generateKey(this.state.focus);
+    const realmConfig: Realm.PartialConfiguration = this.generateRealmConfig();
     return (
-      <RealmBrowser
-        classes={this.state.classes}
-        contentKey={contentKey}
-        contentRef={this.contentRef}
-        dataVersion={this.state.dataVersion}
-        dataVersionAtBeginning={this.state.dataVersionAtBeginning}
-        editMode={this.props.readOnly ? EditMode.Disabled : this.state.editMode}
-        focus={this.state.focus}
-        getClassFocus={this.getClassFocus}
-        getSchemaLength={this.getSchemaLength}
-        isAddClassOpen={this.state.isAddClassOpen}
-        isAddPropertyOpen={this.state.isAddPropertyOpen}
-        isClassNameAvailable={this.isClassNameAvailable}
-        isEncryptionDialogVisible={this.state.isEncryptionDialogVisible}
-        isLeftSidebarOpen={this.state.isLeftSidebarOpen}
-        isPropertyNameAvailable={this.isPropertyNameAvailable}
-        onAddClass={this.onAddClass}
-        onAddProperty={this.onAddProperty}
-        onCancelTransaction={this.onCancelTransaction}
-        onClassFocussed={this.onClassFocussed}
-        onCommitTransaction={this.onCommitTransaction}
-        onHideEncryptionDialog={this.onHideEncryptionDialog}
-        onLeftSidebarToggle={this.onLeftSidebarToggle}
-        onListFocussed={this.onListFocussed}
-        onOpenWithEncryption={this.onOpenWithEncryption}
-        onRealmChanged={this.onRealmChanged}
-        progress={this.state.progress}
-        realm={this.realm}
-        toggleAddClass={this.toggleAddClass}
-        toggleAddClassProperty={this.toggleAddClassProperty}
-      />
+      <RealmProvider {...realmConfig}>
+        <RealmConsumer>
+          {({ realm }) => {
+            if (this.realm !== realm) {
+              this.realm = realm;
+              // Waiting for the next tick to prevent setState from being called while rendering
+              process.nextTick(this.onRealmOpened);
+            }
+            return (
+              <RealmBrowser
+                classes={realm.schema}
+                contentKey={contentKey}
+                contentRef={this.contentRef}
+                dataVersion={this.state.dataVersion}
+                dataVersionAtBeginning={this.state.dataVersionAtBeginning}
+                editMode={
+                  this.props.readOnly ? EditMode.Disabled : this.state.editMode
+                }
+                focus={this.state.focus}
+                getClassFocus={this.getClassFocus}
+                getSchemaLength={this.getSchemaLength}
+                isAddClassOpen={this.state.isAddClassOpen}
+                isAddPropertyOpen={this.state.isAddPropertyOpen}
+                isClassNameAvailable={this.isClassNameAvailable}
+                isEncryptionDialogVisible={this.state.isEncryptionDialogVisible}
+                isLeftSidebarOpen={this.state.isLeftSidebarOpen}
+                isPropertyNameAvailable={this.isPropertyNameAvailable}
+                onAddClass={this.onAddClass}
+                onAddProperty={this.onAddProperty}
+                onCancelTransaction={this.onCancelTransaction}
+                onClassFocussed={this.onClassFocussed}
+                onCommitTransaction={this.onCommitTransaction}
+                onHideEncryptionDialog={this.onHideEncryptionDialog}
+                onLeftSidebarToggle={this.onLeftSidebarToggle}
+                onListFocussed={this.onListFocussed}
+                onOpenWithEncryption={this.onOpenWithEncryption}
+                onRealmChange={this.onRealmChange}
+                realm={realm}
+                toggleAddClass={this.toggleAddClass}
+                toggleAddClassProperty={this.toggleAddClassProperty}
+                importProgress={this.state.importProgress}
+              />
+            );
+          }}
+        </RealmConsumer>
+      </RealmProvider>
     );
   }
 
@@ -186,6 +203,12 @@ class RealmBrowserContainer
           click: () => this.onExportSchema(Language.CS),
         },
       ],
+    };
+
+    const clearCacheMenuItem: MenuItemConstructorOptions = {
+      id: 'clear-cached-realm',
+      label: 'Clear cached Realm',
+      click: this.onClearCachedRealm,
     };
 
     const transactionMenuItems: MenuItemConstructorOptions[] =
@@ -247,7 +270,7 @@ class RealmBrowserContainer
       {
         action: 'prepend',
         id: 'close',
-        items: [exportSchemaMenu, { type: 'separator' }],
+        items: [exportSchemaMenu, clearCacheMenuItem, { type: 'separator' }],
       },
       {
         action: 'append',
@@ -257,6 +280,8 @@ class RealmBrowserContainer
     ]);
   }
 
+  /*
+  // TODO: Fix opening encrypted Realms
   protected loadingRealmFailed(err: Error) {
     const message = err.message || '';
     const mightBeEncrypted =
@@ -274,14 +299,15 @@ class RealmBrowserContainer
       super.loadingRealmFailed(err);
     }
   }
+  */
 
-  protected onRealmChanged = () => {
+  protected onRealmChange = () => {
     this.setState({ dataVersion: this.state.dataVersion + 1 });
   };
 
-  protected onRealmLoaded = () => {
+  protected onRealmOpened = () => {
     if (!this.realm) {
-      throw new Error('onRealmLoaded was called without a realm sat');
+      throw new Error('onRealmOpened was called without a realm sat');
     }
     if (this.props.readOnly) {
       // Monkey-patch the write function to ensure no-one writes to the Realm
@@ -289,17 +315,38 @@ class RealmBrowserContainer
         throw new Error('Realm was opened as read-only');
       };
     }
-    const firstSchemaName =
-      this.realm.schema.length > 0 ? this.realm.schema[0].name : undefined;
-    this.setState({
-      classes: this.realm.schema,
-    });
-    if (firstSchemaName) {
-      this.onClassFocussed(firstSchemaName);
-    }
+    this.realm.addListener('schema', this.onSchemaChange);
+    this.realm.addListener('change', this.onRealmChange);
+    // Fire the schema change initially
+    this.onSchemaChange();
     // Start importing data if needed
     this.performImport();
   };
+
+  private generateRealmConfig(): Realm.PartialConfiguration {
+    const { realm } = this.props;
+    if (realm.mode === 'local') {
+      return {
+        path: realm.path,
+        encryptionKey: realm.encryptionKey,
+        // It's undocumented, but sync can indeed take a boolean allowing it to open local Realms with sync history.
+        sync: (realm.sync as any) as Realm.Sync.SyncConfiguration,
+      };
+    } else if (realm.mode === 'synced') {
+      const user = Realm.Sync.User.deserialize(realm.user);
+      // TODO: Handle realm.validateCertificates
+      return user.createConfiguration({
+        encryptionKey: realm.encryptionKey,
+        sync: {
+          url: realm.path,
+          _disableQueryBasedSyncUrlChecks: true,
+          fullSynchronization: true,
+        },
+      });
+    } else {
+      throw new Error(`Unsupported mode ${realm.mode}`);
+    }
+  }
 
   private onBeginTransaction = () => {
     if (this.realm && !this.realm.isInTransaction) {
@@ -335,6 +382,15 @@ class RealmBrowserContainer
     }
   };
 
+  private onClearCachedRealm = () => {
+    if (this.realm) {
+      const config = this.generateRealmConfig();
+      this.realm.close();
+      Realm.deleteFile(config);
+      location.reload();
+    }
+  };
+
   private isClassNameAvailable = (name: string): boolean => {
     return !this.state.classes.find(schema => schema.name === name);
   };
@@ -361,23 +417,16 @@ class RealmBrowserContainer
   private onAddClass = async (schema: Realm.ObjectSchema) => {
     if (this.realm) {
       try {
-        // The schema version needs to be bumped for local realms
-        const nextSchemaVersion = this.realm.schemaVersion + 1;
-        const modifiedSchema = [...this.state.classes, schema];
-        // Close the current Realm
-        this.realm.close();
-        // Deleting the object to indicate we've closed it
-        delete this.realm;
-        // Clear the focus until the realm is re-loaded
-        this.setState({ focus: null });
-        // Load it again with the new schema
-        await this.loadRealm(
-          this.props.realm,
-          modifiedSchema,
-          nextSchemaVersion,
-        );
-        // Select the schema when it the realm has loaded
-        this.onClassFocussed(schema.name);
+        // Update the schema using an undocumented API
+        if (typeof (this.realm as any)._updateSchema === 'function') {
+          (this.realm as any)._updateSchema([...this.realm.schema, schema]);
+          // Select the schema when it the realm has loaded
+          this.onClassFocussed(schema.name);
+        } else {
+          throw new Error(
+            'Missing the _updateSchema method on the Realm instance',
+          );
+        }
       } catch (err) {
         showError(`Failed creating the model "${schema.name}"`, err);
       }
@@ -388,27 +437,22 @@ class RealmBrowserContainer
     if (this.realm && this.state.focus && this.state.focus.kind === 'class') {
       try {
         const focusedClassName = this.state.focus.className;
-        const nextSchemaVersion = this.realm.schemaVersion + 1;
         const modifiedSchema = schemaUtils.addProperty(
-          this.state.classes,
-          this.state.focus.className,
+          this.realm.schema,
+          focusedClassName,
           name,
           type,
         );
-        // Close the current Realm
-        this.realm.close();
-        // Deleting the object to indicate we've closed it
-        delete this.realm;
-        // Clear the focus until the realm is re-loaded
-        this.setState({ focus: null });
-        // Load it again with the new schema
-        await this.loadRealm(
-          this.props.realm,
-          modifiedSchema,
-          nextSchemaVersion,
-        );
-        // Ensure we've selected the class that we've just added a property to
-        this.onClassFocussed(focusedClassName);
+        // Update the schema using an undocumented API
+        if (typeof (this.realm as any)._updateSchema === 'function') {
+          (this.realm as any)._updateSchema(modifiedSchema);
+          // Ensure we've selected the class that we've just added a property to
+          this.onClassFocussed(focusedClassName);
+        } else {
+          throw new Error(
+            'Missing the _updateSchema method on the Realm instance',
+          );
+        }
       } catch (err) {
         showError(
           `Failed adding the property named "${name}" to the selected schema`,
@@ -513,7 +557,9 @@ class RealmBrowserContainer
 
   private onOpenWithEncryption = (key: string) => {
     this.props.realm.encryptionKey = Buffer.from(key, 'hex');
-    this.loadRealm(this.props.realm);
+    // TODO: Fix opening Realms with encryption.
+    throw new Error('Not implemented');
+    // this.loadRealm(this.props.realm);
   };
 
   private onBeforeUnload = (e: BeforeUnloadEvent) => {
@@ -563,6 +609,10 @@ class RealmBrowserContainer
   private removeListeners() {
     ipcRenderer.removeListener('export-schema', this.onExportSchema);
     window.removeEventListener('beforeunload', this.onBeforeUnload);
+    if (this.realm) {
+      this.realm.removeListener('schema', this.onSchemaChange);
+      this.realm.removeListener('change', this.onRealmChange);
+    }
   }
 
   private derivePropertiesFromProperty(
@@ -681,10 +731,21 @@ class RealmBrowserContainer
     }
   };
 
+  private onSchemaChange = () => {
+    if (this.realm) {
+      const firstSchemaName =
+        this.realm.schema.length > 0 ? this.realm.schema[0].name : undefined;
+      this.setState({ classes: this.realm.schema });
+      if (firstSchemaName && !this.state.focus) {
+        this.onClassFocussed(firstSchemaName);
+      }
+    }
+  };
+
   private performImport() {
     if (this.props.import && this.realm) {
       const { format, paths, schema } = this.props.import;
-      this.setState({ progress: { status: 'in-progress' } });
+      this.setState({ importProgress: { status: 'in-progress' } });
       // Get the importer
       try {
         const importer = dataImporter.getDataImporter(format, paths, schema);
@@ -692,7 +753,7 @@ class RealmBrowserContainer
       } catch (err) {
         showError('Faild to import data', err);
       } finally {
-        this.setState({ progress: { status: 'done' } });
+        this.setState({ importProgress: { status: 'done' } });
       }
     }
   }
