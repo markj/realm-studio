@@ -136,7 +136,7 @@ export const RealmsTable = ({
       </FilterableRealmTable>
 
       <FloatingControls isOpen={selectedRealms.length === 0}>
-        <Button onClick={onRealmCreation}>Create new Realm</Button>
+        <Button onClick={onRealmCreation}>Export All Realms!</Button>
       </FloatingControls>
 
       <RealmSidebar

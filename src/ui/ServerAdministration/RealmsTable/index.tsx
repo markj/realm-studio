@@ -16,7 +16,7 @@
 //
 ////////////////////////////////////////////////////////////////////////////
 
-import electron from 'electron';
+import electron, { dialog } from 'electron';
 import memoize from 'memoize-one';
 import React from 'react';
 import Realm from 'realm';
@@ -35,6 +35,10 @@ import {
 import { getQueryForFields } from '../utils';
 
 import { RealmsTable } from './RealmsTable';
+import { DataExporter, DataExportFormat } from '../../../services/data-exporter';
+import { user } from 'src/services/raas';
+import { ISyncedRealmToLoad } from 'src/utils/realms';
+import { ISslConfiguration } from 'src/services/ros/realms';
 
 export type MetricGetter = (
   realm: RealmFile,
@@ -201,16 +205,119 @@ class RealmsTableContainer extends React.Component<
   };
 
   public onRealmCreation = async () => {
-    try {
-      const realm = await this.props.createRealm();
-      this.setState({ selectedRealms: [realm] });
-    } catch (err) {
-      if (err.message === 'Realm creation cancelled') {
-        // This is an expected expression to be thrown - no need to show it
-        return;
+    // try {
+    //   const realm = await this.props.createRealm();
+    //   this.setState({ selectedRealms: [realm] });
+    // } catch (err) {
+    //   if (err.message === 'Realm creation cancelled') {
+    //     // This is an expected expression to be thrown - no need to show it
+    //     return;
+    //   }
+
+    
+
+    const { realms, queryError } = this.realms(
+      this.props.adminRealm,
+      this.state.searchString,
+      this.state.showPartialRealms,
+      this.state.showSystemRealms,
+    );
+
+    const exportPath = "/Users/mark/Downloads/RealmExport/"
+
+    var i = 0
+    // showError('Total Realms: ' + realms.length)
+    const startedWith = realms.length
+
+    var filteredList = realms.filter(function(realmFile) {
+      return realmFile.path.endsWith('/fitness')
+    }).sort(function(a, b) { return a.path.localeCompare(b.path)}).reverse();
+
+    const exporter = new DataExporter(DataExportFormat.JSON);
+    const fs = require('fs')
+    var numberOfDownloaded = 0
+
+    console.log("About to export all databases...  Realms found: " + startedWith + " but filtered down to: " + filteredList.length)
+
+    function getNextFile(): {realmFile: RealmFile, filename: string} | undefined {
+
+      while (filteredList.length > 0) {
+        var currentRealmFile = filteredList.pop()
+
+        if (currentRealmFile == undefined) {
+          console.log("FINISHED!")
+          return undefined
+        } 
+        try {
+          var filename = currentRealmFile.path.replace(/\//g, "_")
+          const destinationPath = exportPath + filename + ".json"
+
+          console.log("Checking " + destinationPath)
+  
+          if (!fs.existsSync(destinationPath)) {
+            console.log("  Missing..")
+            return {realmFile: currentRealmFile, filename: destinationPath}
+          }
+        } catch (error) {
+          console.log("Faild to open file " + error)
+        }
       }
-      showError('Failed to create Realm', err);
+      return undefined
     }
+
+    function downloadNextDatabase(user: Realm.Sync.User, next: () => void) {
+      console.log("Starting to download next database..  We have: " + filteredList.length + " left..  Downloaded in this session: " + numberOfDownloaded)
+      var result = getNextFile()
+
+      if (result == undefined) {
+        console.log("FINISHED!")
+        return
+      } 
+      var destinationPath  = result.filename
+      var currentRealmFile = result.realmFile
+      // filteredList.pop()
+
+      try {
+        if (fs.existsSync(destinationPath)) {
+          console.log("Skipping.. already done!")
+          next()
+        } else {
+
+          var ssl: ISslConfiguration = { validateCertificates: true }
+          var p: Realm.Sync.ProgressNotificationCallback = (transferred: number, transferable: number) {          
+          }
+
+          const realmPromise = ros.realms.open({
+            user: user,
+            realmPath: currentRealmFile.path,
+            encryptionKey: undefined,
+            ssl,          
+            progressCallback: p          
+          });
+          numberOfDownloaded += 1
+
+          realmPromise.then( r => {
+            console.log("About to export to: " + destinationPath)
+            exporter.export(r, destinationPath);
+            r.close()
+          }).finally( function() {
+            onNext()
+          })
+        }
+
+      } catch (error) { 
+        console.log("**FAILED**: " + error)
+      }
+    }
+
+    const user = this.props.user
+
+    function onNext() {
+      setTimeout( function() {
+        downloadNextDatabase(user, onNext)
+      }, 500 );
+    }
+    onNext()
   };
 
   public onRealmSizeRecalculate = async (realm: RealmFile) => {
