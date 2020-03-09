@@ -17,6 +17,7 @@
 ////////////////////////////////////////////////////////////////////////////
 
 import { ipcRenderer, MenuItemConstructorOptions, remote } from 'electron';
+import fs from 'fs-extra';
 import path from 'path';
 import React from 'react';
 import Realm from 'realm';
@@ -24,7 +25,7 @@ import Realm from 'realm';
 import { DataExporter, DataExportFormat } from '../../services/data-exporter';
 import * as dataImporter from '../../services/data-importer';
 import { Language, SchemaExporter } from '../../services/schema-export';
-import { menu } from '../../utils';
+import { menu, realms } from '../../utils';
 import {
   IMenuGenerator,
   IMenuGeneratorProps,
@@ -62,6 +63,8 @@ export type ClassFocussedHandler = (
 ) => void;
 
 const EDIT_MODE_STORAGE_KEY = 'realm-browser-edit-mode';
+const FILE_UPGRADE_NEEDED_MESSAGE =
+  'The Realm file format must be allowed to be upgraded in order to proceed.';
 
 export interface IRealmBrowserState extends IRealmLoadingComponentState {
   // A number that we can use to make components update on changes to data
@@ -116,7 +119,9 @@ class RealmBrowserContainer
   }
 
   public render() {
-    const contentKey = generateKey(this.state.focus);
+    const { focus } = this.state;
+    // Generating a key for the content component (includes length of properties to update when the schema changes)
+    const contentKey = generateKey(focus, true);
     return (
       <RealmBrowser
         classes={this.state.classes}
@@ -295,6 +300,7 @@ class RealmBrowserContainer
     const mightBeEncrypted =
       message.indexOf('Not a Realm file.') >= 0 ||
       message.indexOf('Invalid mnemonic') >= 0;
+    const realm = this.props.realm;
     if (mightBeEncrypted) {
       this.setState({
         isEncryptionDialogVisible: true,
@@ -302,14 +308,73 @@ class RealmBrowserContainer
           status: 'done',
         },
       });
+    } else if (
+      message === FILE_UPGRADE_NEEDED_MESSAGE &&
+      realm.mode === realms.RealmLoadingMode.Local
+    ) {
+      const buttons = ['Cancel', 'Upgrade in-place', 'Backup and upgrade'];
+      const answerIndex = remote.dialog.showMessageBox({
+        type: 'question',
+        buttons,
+        defaultId: 2,
+        title: 'Realm file needs an upgrade',
+        message: 'The Realm file stores data in an outdated format',
+        detail:
+          'This file needs to be upgraded to a newer file format before it can be opened. Would you like a backup of the file, before performing an irreversible upgrade of the file?',
+      });
+      const answer = buttons[answerIndex];
+
+      if (answer === 'Upgrade in-place' || answer === 'Backup and upgrade') {
+        try {
+          if (answer === 'Backup and upgrade') {
+            // Create a backup first
+            const backupDirectory = path.dirname(realm.path);
+            const backupFileName = path.basename(realm.path, '.realm');
+            const backupPath = path.resolve(
+              backupDirectory,
+              backupFileName + '.backup.realm',
+            );
+            // Copy, but ensure we don't override an existing file
+            fs.copyFileSync(realm.path, backupPath, fs.constants.COPYFILE_EXCL);
+            remote.dialog.showMessageBox({
+              title: 'Backup saved',
+              message: 'The backup Realm file was saved to:',
+              detail: backupPath,
+            });
+          }
+          // Reopen, enabling format upgrades an upgrade
+          this.loadRealm({
+            ...realm,
+            enableFormatUpgrade: true,
+          });
+        } catch (err) {
+          showError('Failed upgrading Realm', err);
+          window.close();
+        }
+      } else {
+        window.close();
+      }
     } else {
-      this.props.realm.encryptionKey = undefined;
+      delete this.props.realm.encryptionKey;
       super.loadingRealmFailed(err);
     }
   }
 
   protected onRealmChanged = () => {
     this.setState({ dataVersion: this.state.dataVersion + 1 });
+  };
+
+  protected onRealmSchemaChanged = () => {
+    if (this.realm) {
+      let { focus } = this.state;
+      // Update the classes and derive properties for the active focus
+      if (focus && focus.kind === 'class') {
+        focus = this.getClassFocus(focus.className);
+      } else if (focus && focus.kind === 'list') {
+        focus = this.getListFocus(focus.parent, focus.property);
+      }
+      this.setState({ classes: this.realm.schema, focus });
+    }
   };
 
   protected onRealmLoaded = () => {
@@ -587,10 +652,7 @@ class RealmBrowserContainer
 
   private addListeners() {
     ipcRenderer.addListener('export-schema', this.onExportSchema);
-    window.addEventListener<'beforeunload'>(
-      'beforeunload',
-      this.onBeforeUnload,
-    );
+    window.addEventListener('beforeunload', this.onBeforeUnload);
   }
 
   private removeListeners() {
