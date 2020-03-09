@@ -241,6 +241,7 @@ class RealmsTableContainer extends React.Component<
 
     function getNextFile(): {realmFile: RealmFile, filename: string} | undefined {
 
+      var checked = 0
       while (filteredList.length > 0) {
         var currentRealmFile = filteredList.pop()
 
@@ -251,16 +252,16 @@ class RealmsTableContainer extends React.Component<
         try {
           var filename = currentRealmFile.path.replace(/\//g, "_")
           const destinationPath = exportPath + filename + ".json"
-
-          console.log("Checking " + destinationPath)
   
           if (!fs.existsSync(destinationPath)) {
-            console.log("  Missing..")
+            console.log("Skipped " + checked + " files. First missing:" + destinationPath)
             return {realmFile: currentRealmFile, filename: destinationPath}
           }
         } catch (error) {
           console.log("Faild to open file " + error)
         }
+
+        checked += 1
       }
       return undefined
     }
@@ -284,7 +285,7 @@ class RealmsTableContainer extends React.Component<
         } else {
 
           var ssl: ISslConfiguration = { validateCertificates: true }
-          var p: Realm.Sync.ProgressNotificationCallback = (transferred: number, transferable: number) {          
+          var p: Realm.Sync.ProgressNotificationCallback = (transferred: number, transferable: number) => { 
           }
 
           const realmPromise = ros.realms.open({
@@ -315,7 +316,7 @@ class RealmsTableContainer extends React.Component<
     function onNext() {
       setTimeout( function() {
         downloadNextDatabase(user, onNext)
-      }, 500 );
+      }, 10 );
     }
     onNext()
   };
