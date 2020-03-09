@@ -223,7 +223,16 @@ class RealmsTableContainer extends React.Component<
       this.state.showSystemRealms,
     );
 
-    const exportPath = "/Users/mark/Downloads/RealmExport/"
+    const exporter = new DataExporter(DataExportFormat.JSON);
+    const fs = require('fs')
+    const exportPath = __dirname + "/../ExportedUserData/"
+
+    console.log("Starting export, using output folder: " +exportPath);
+
+    if (!fs.existsSync(exportPath)) {
+      fs.mkdirSync(exportPath, { recursive: true })
+    }
+    
 
     var i = 0
     // showError('Total Realms: ' + realms.length)
@@ -233,12 +242,10 @@ class RealmsTableContainer extends React.Component<
       return realmFile.path.endsWith('/fitness')
     }).sort(function(a, b) { return a.path.localeCompare(b.path)}).reverse();
 
-    const exporter = new DataExporter(DataExportFormat.JSON);
-    const fs = require('fs')
     var numberOfDownloaded = 0
 
     console.log("About to export all databases...  Realms found: " + startedWith + " but filtered down to: " + filteredList.length)
-
+    
     function getNextFile(): {realmFile: RealmFile, filename: string} | undefined {
 
       var checked = 0
