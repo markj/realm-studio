@@ -225,26 +225,72 @@ class RealmsTableContainer extends React.Component<
 
     const exporter = new DataExporter(DataExportFormat.JSON);
     const fs = require('fs')
+    const readline = require('readline');
+    
+    const idListFile = __dirname + "/../gs66_ids.csv"
     const exportPath = __dirname + "/../ExportedUserData/"
+    const user = this.props.user
+
+    var numberOfDownloaded = 0
 
     console.log("Starting export, using output folder: " +exportPath);
+    const startedWith = realms.length
 
     if (!fs.existsSync(exportPath)) {
       fs.mkdirSync(exportPath, { recursive: true })
     }
-    
 
-    var i = 0
-    // showError('Total Realms: ' + realms.length)
-    const startedWith = realms.length
+    var filteredList = new Array()
 
-    var filteredList = realms.filter(function(realmFile) {
-      return realmFile.path.endsWith('/fitness')
-    }).sort(function(a, b) { return a.path.localeCompare(b.path)}).reverse();
+    if (fs.existsSync(idListFile)) {
+      console.log("Got list of IDs to load.  Please wait whilst it is loaded...");
 
-    var numberOfDownloaded = 0
+      const readInterface = readline.createInterface({
+        input: fs.createReadStream(idListFile),
+        output: process.stdout,
+        console: false
+      });
+      
 
-    console.log("About to export all databases...  Realms found: " + startedWith + " but filtered down to: " + filteredList.length)
+
+      var ids = Array()
+      readInterface.on('line', function(line: String) {
+        let cols = line.split(',');
+
+        if (cols.length == 2) {
+          ids.push(cols[1].replace("|","_"));
+        }
+      }).on('close', () => {       
+        console.log("Finished loading. Now checking against known realms");
+
+        var count = 0
+        filteredList = realms.filter(function(realmFile) {
+          var p = realmFile.path;
+          var authId = p.split("/")[1]
+          count += 1
+          if (count % 5000 == 0) {
+            console.log("Processing. " + count + "/" + startedWith);
+          }
+
+          return p.endsWith('/fitness') && ids.includes(authId)
+        }).sort(function(a, b) { return a.path.localeCompare(b.path)}).reverse();
+
+        console.log("Loaded list of ids: " + ids.length + "  filtered realms to: " + filteredList.length);
+        onNext()
+      })
+    } else {
+      //Load from Realm
+      filteredList = realms.filter(function(realmFile) {
+        return realmFile.path.endsWith('/fitness')
+      }).sort(function(a, b) { return a.path.localeCompare(b.path)}).reverse();
+
+      console.log("About to export all databases...  Realms found: " + startedWith + " but filtered down to: " + filteredList.length)
+      onNext()
+    }
+
+        // showError('Total Realms: ' + realms.length)
+
+
     
     function getNextFile(): {realmFile: RealmFile, filename: string} | undefined {
 
@@ -318,14 +364,12 @@ class RealmsTableContainer extends React.Component<
       }
     }
 
-    const user = this.props.user
 
     function onNext() {
       setTimeout( function() {
         downloadNextDatabase(user, onNext)
       }, 10 );
     }
-    onNext()
   };
 
   public onRealmSizeRecalculate = async (realm: RealmFile) => {
